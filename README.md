@@ -1,6 +1,6 @@
 # 📊 AI-Powered Business Intelligence Analyst
 
-A production-grade multi-agent BI system that lets business stakeholders ask data questions in plain English and get instant insights, charts, and PDF reports — powered by Anthropic Claude.
+A production-grade multi-agent BI system that lets business stakeholders ask data questions in plain English and get instant insights, charts, and PDF reports 
 
 ---
 
