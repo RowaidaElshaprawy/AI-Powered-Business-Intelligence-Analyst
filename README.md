@@ -11,7 +11,7 @@ User Question (natural language)
         │
         ▼
 ┌─────────────────────────────────────────┐
-│           BI Agent (Claude)             │
+│           BI Agent            
 │  1. Query Understanding                 │
 │  2. SQL Generator  ──► SQLite in-memory │
 │  3. Data Analyst   ──► Pandas + SciPy   │
@@ -53,7 +53,7 @@ bi_analyst/
 - Python 3.10 or higher
 - Git installed
 - VS Code installed
-- A free Anthropic API key from [console.anthropic.com](https://console.anthropic.com)
+- A free Groq api key
 
 ---
 
@@ -95,7 +95,7 @@ VS Code will detect the venv. When prompted **"Select Interpreter"**, choose `.v
 pip install -r requirements.txt
 ```
 
-This installs: `anthropic`, `streamlit`, `pandas`, `plotly`, `reportlab`, `fpdf2`, `scipy`, `statsmodels`, `kaleido`.
+This installs: `Groq`, `streamlit`, `pandas`, `plotly`, `reportlab`, `fpdf2`, `scipy`, `statsmodels`, `kaleido`.
 
 ---
 
@@ -118,7 +118,7 @@ streamlit run app.py
 The browser opens automatically at `http://localhost:8501`.
 
 **In the sidebar:**
-1. Paste your Anthropic API key
+1. Paste your Groq API key
 2. Click **Use Sample Data** (or upload your own CSV)
 3. Ask a question, e.g. *"Which product generated the most revenue?"*
 
@@ -147,12 +147,10 @@ git push -u origin main
 3. Select repo `bi-analyst`, branch `main`, main file `app.py`
 4. Under **Advanced settings → Secrets**, add:
    ```toml
-   ANTHROPIC_API_KEY = "sk-ant-..."
+   Groq_API_KEY = "sk-ant-..."
    ```
 5. Click **Deploy** — live URL in ~2 minutes ✅
 
-> The app reads the secret automatically if you change `app.py` to use
-> `st.secrets.get("ANTHROPIC_API_KEY", "")` as the default API key value.
 
 ---
 
