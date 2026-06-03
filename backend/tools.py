@@ -1,17 +1,21 @@
 """
-Tools exposed to the Claude agent via Anthropic tool-use.
-Each tool is a plain Python function plus a JSON schema descriptor.
+LangChain @tool functions for the LangGraph agent.
+Tools are decorated with @tool so LangGraph / LangChain can bind them directly.
+A plain dispatcher is also kept for any direct calls.
 """
 from __future__ import annotations
 import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from langchain_core.tools import tool
+
 from backend.data     import execute_sql_on_dataframe, summarize_result, dataframe_schema
 from backend.analysis import build_analysis_plan
 
-# ── shared dataframe ──────────────────────────────────────────────────────────
+# ── shared state ──────────────────────────────────────────────────────────────
 _shared_df: pd.DataFrame | None = None
+_last_fig:  go.Figure   | None  = None
 
 def set_tool_dataframe(df: pd.DataFrame) -> None:
     global _shared_df
@@ -20,30 +24,50 @@ def set_tool_dataframe(df: pd.DataFrame) -> None:
 def get_tool_dataframe() -> pd.DataFrame | None:
     return _shared_df
 
+def set_last_fig(fig: go.Figure | None) -> None:
+    global _last_fig
+    _last_fig = fig
 
-# ── tool implementations ──────────────────────────────────────────────────────
+def get_last_fig() -> go.Figure | None:
+    return _last_fig
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOOL 1 — inspect schema
+# ══════════════════════════════════════════════════════════════════════════════
+@tool
 def inspect_dataset_schema() -> str:
-    """Return column names, types, and sample rows so the agent understands the data."""
+    """Inspect column names, data types, and sample rows of the loaded dataset.
+    Call this first if unsure about available columns."""
     if _shared_df is None:
-        return "Error: No dataset loaded. Please upload a CSV file."
+        return "Error: No dataset loaded. Please upload a CSV file first."
     return dataframe_schema(_shared_df)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TOOL 2 — analyse data + generate chart
+# ══════════════════════════════════════════════════════════════════════════════
+@tool
 def analyze_business_data(
     metric:     str = "revenue",
     group_by:   str = "product",
     date_grain: str = "",
     chart_type: str = "",
     filter_sql: str = "",
-) -> dict:
+) -> str:
+    """Perform statistical analysis on the dataset.
+    Returns revenue/profit totals, top/weak performers, and generates a Plotly chart.
+    ALWAYS call this before answering any numeric business question.
+
+    Args:
+        metric:     Column to aggregate — e.g. 'revenue' or 'profit'. Default: 'revenue'.
+        group_by:   Column to group by  — e.g. 'product', 'region', 'date'. Default: 'product'.
+        date_grain: Time granularity when grouping by date: 'monthly', 'weekly', 'daily'.
+        chart_type: Hint for chart style: 'bar', 'line', 'pie', 'scatter'. Auto-inferred if empty.
+        filter_sql: Optional HAVING clause, e.g. 'SUM(revenue) > 50000'.
     """
-    Perform statistical analysis on the dataset and return a numeric summary
-    plus a Plotly figure (stored in a shared slot for the UI to pick up).
-    """
-    global _last_fig
     if _shared_df is None:
-        return {"error": "No dataset loaded."}
+        return json.dumps({"error": "No dataset loaded."})
 
     plan = build_analysis_plan(
         question="",
@@ -55,41 +79,40 @@ def analyze_business_data(
     )
     sql = plan["sql"]
     if filter_sql:
-        sql = sql + f" HAVING {filter_sql}"
+        sql += f" HAVING {filter_sql}"
 
     try:
         result_df = execute_sql_on_dataframe(_shared_df, sql)
     except Exception as e:
-        return {"error": str(e), "sql": sql}
+        return json.dumps({"error": str(e), "sql": sql})
 
     summary = summarize_result(result_df, _shared_df)
 
-    # build plotly figure
-    ct = plan["chart_type"]
+    # build chart
+    ct   = plan["chart_type"]
     x, y = plan["chart_x"], plan["chart_y"]
-    kwargs = dict(
+    kw   = dict(
         template="plotly_dark",
         title=f"{metric.title()} by {group_by.title()}",
         color_discrete_sequence=px.colors.sequential.Blues_r,
     )
     try:
         if ct == "line":
-            fig = px.line(result_df,  x=x, y=y, **kwargs)
+            fig = px.line(result_df, x=x, y=y, **kw)
         elif ct == "pie":
-            fig = px.pie(result_df,   names=x, values=y, hole=0.4, **kwargs)
+            fig = px.pie(result_df, names=x, values=y, hole=0.4, **kw)
         elif ct == "scatter":
-            fig = px.scatter(result_df, x=x, y=y, **kwargs)
+            fig = px.scatter(result_df, x=x, y=y, **kw)
         else:
-            fig = px.bar(result_df, x=x, y=y,
-                         color=y, color_continuous_scale="Blues", **kwargs)
-        fig.update_layout(plot_bgcolor="#151820", paper_bgcolor="#151820", font_color="#e8eaf0")
+            fig = px.bar(result_df, x=x, y=y, color=y,
+                         color_continuous_scale="Blues", **kw)
+        fig.update_layout(plot_bgcolor="#151820", paper_bgcolor="#151820",
+                          font_color="#e8eaf0")
+        set_last_fig(fig)
     except Exception:
-        fig = None
+        pass
 
-    # store for UI
-    set_last_fig(fig)
-
-    return {
+    result = {
         "summary":        str(summary),
         "rows_returned":  summary.rows_returned,
         "total_revenue":  summary.total_revenue,
@@ -100,71 +123,21 @@ def analyze_business_data(
         "data_preview":   result_df.head(10).to_string(index=False),
         "sql_used":       sql,
     }
+    return json.dumps(result, ensure_ascii=False)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TOOL 3 — PDF report trigger
+# ══════════════════════════════════════════════════════════════════════════════
+@tool
 def generate_pdf_report(content: str) -> str:
-    """Tell the agent the PDF will be generated by the UI layer."""
+    """Compile analysis findings into a downloadable executive PDF report.
+
+    Args:
+        content: The full narrative text to include in the report.
+    """
     return "PDF_REQUESTED:" + content
 
 
-# ── last figure slot (for UI) ─────────────────────────────────────────────────
-_last_fig: go.Figure | None = None
-
-def set_last_fig(fig: go.Figure | None) -> None:
-    global _last_fig
-    _last_fig = fig
-
-def get_last_fig() -> go.Figure | None:
-    return _last_fig
-
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "inspect_dataset_schema",
-            "description": "Inspect column names, data types, and sample rows.",
-            "parameters": {"type": "object", "properties": {}, "required": []}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "analyze_business_data",
-            "description": "Perform statistical analysis on the dataset.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "metric": {"type": "string"},
-                    "group_by": {"type": "string"},
-                    "date_grain": {"type": "string"},
-                    "chart_type": {"type": "string"},
-                    "filter_sql": {"type": "string"},
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_pdf_report",
-            "description": "Compile the analysis findings into a downloadable PDF.",
-            "parameters": {
-                "type": "object",
-                "properties": {"content": {"type": "string"}},
-                "required": ["content"]
-            }
-        }
-    }
-]
-
-# ── dispatcher ────────────────────────────────────────────────────────────────
-
-def dispatch_tool(name: str, inputs: dict) -> str:
-    if name == "inspect_dataset_schema":
-        return inspect_dataset_schema()
-    if name == "analyze_business_data":
-        result = analyze_business_data(**inputs)
-        return json.dumps(result, ensure_ascii=False)
-    if name == "generate_pdf_report":
-        return generate_pdf_report(**inputs)
-    return f"Unknown tool: {name}"
+# ── convenience list for LangChain tool binding ───────────────────────────────
+ALL_TOOLS = [inspect_dataset_schema, analyze_business_data, generate_pdf_report]

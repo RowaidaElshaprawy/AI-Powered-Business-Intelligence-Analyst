@@ -1,68 +1,95 @@
 """
-Multi-turn agentic loop using Anthropic's tool-use API.
+Multi-agent loop built with LangGraph + Groq (LLaMA 3.3 70B — free tier).
 
-Agents modelled:
-  1. Query Understanding  – handled by the system prompt
-  2. SQL Generator        – handled by analyze_business_data tool
-  3. Data Analyst         – tool + post-processing
-  4. Visualisation Agent  – plotly fig returned alongside text
-  5. Insight Generator    – in the final LLM response
-  6. Report Writer        – generate_pdf_report tool
+Graph topology:
+  [entry] → agent_node ──(tool_calls?)──► tool_node → agent_node → ...
+                      └──(no calls)────► END
+
+Agents modelled inside the single graph:
+  1. Query Understanding  – system prompt parses intent
+  2. SQL Generator        – analyze_business_data tool builds + runs SQL
+  3. Data Analyst         – tool returns stats & KPIs
+  4. Visualisation Agent  – tool generates Plotly figure
+  5. Insight Generator    – LLM synthesises findings into narrative
+  6. Report Writer        – generate_pdf_report tool produces PDF
 """
 from __future__ import annotations
-import json
-from groq import Groq
+from typing import TypedDict, Annotated, Sequence
+import operator
+
 import plotly.graph_objects as go
 import pandas as pd
 
+from langchain_groq          import ChatGroq
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from langgraph.graph         import StateGraph, END
+from langgraph.prebuilt      import ToolNode
+
 from backend.config import STRATEGIC_AGENT_PROMPT, GROQ_MODEL
-from backend.tools  import TOOL_SCHEMAS, dispatch_tool, get_last_fig
+from backend.tools  import ALL_TOOLS, get_last_fig, set_tool_dataframe
 
+
+# ── LangGraph state ───────────────────────────────────────────────────────────
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+
+
+# ── graph factory ─────────────────────────────────────────────────────────────
+def _build_graph(api_key: str):
+    llm = ChatGroq(groq_api_key=api_key, model=GROQ_MODEL)
+    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+
+    sys_msg = SystemMessage(content=STRATEGIC_AGENT_PROMPT)
+
+    def agent_node(state: AgentState):
+        # strip any previous SystemMessages to avoid duplication, prepend ours
+        msgs = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
+        response = llm_with_tools.invoke([sys_msg] + msgs)
+        return {"messages": [response]}
+
+    def should_continue(state: AgentState):
+        last = state["messages"][-1]
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            return "tools"
+        return END
+
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", ToolNode(tools=ALL_TOOLS))
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", should_continue)
+    graph.add_edge("tools", "agent")
+    return graph.compile()
+
+
+# ── public entry point ────────────────────────────────────────────────────────
 def run_agent(
-    question:  str,
-    df:        pd.DataFrame,
-    api_key:   str,
-    history:   list[dict] | None = None,
-    max_turns: int = 8,
+    question: str,
+    df:       pd.DataFrame,
+    api_key:  str,
+    history:  list[dict] | None = None,
+    **_,
 ) -> tuple[str, go.Figure | None]:
-    
-    client = Groq(api_key=api_key)
+    """
+    Run the LangGraph agent and return (answer_text, plotly_figure | None).
+    """
+    set_tool_dataframe(df)
+    graph = _build_graph(api_key)
 
-    # Convert history to Groq/OpenAI format
-    messages = [{"role": "system", "content": STRATEGIC_AGENT_PROMPT}]
+    # convert chat history to LangChain message objects
+    lc_messages: list[BaseMessage] = []
     for m in (history or []):
-        if m["role"] in ("user", "assistant", "tool"):
-            messages.append({"role": m["role"], "content": m["content"]})
-    
-    messages.append({"role": "user", "content": question})
+        if m["role"] == "user":
+            lc_messages.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            lc_messages.append(AIMessage(content=m["content"]))
+    lc_messages.append(HumanMessage(content=question))
 
-    for _ in range(max_turns):
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto"
-        )
+    result = graph.invoke({"messages": lc_messages})
 
-        message = response.choices[0].message
-        messages.append(message)
+    # extract final text from the last AI message
+    for msg in reversed(result["messages"]):
+        if isinstance(msg, AIMessage) and msg.content:
+            return str(msg.content), get_last_fig()
 
-        # If no tool calls → return final answer
-        if not message.tool_calls:
-            return message.content or "Analysis complete.", get_last_fig()
-
-        # Execute tools
-        for tool_call in message.tool_calls:
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-            
-            output = dispatch_tool(tool_name, tool_args)
-            
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "name": tool_name,
-                "content": str(output)
-            })
-
-    return "Reached maximum reasoning steps.", get_last_fig()
+    return "Analysis complete.", get_last_fig()

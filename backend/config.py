@@ -3,16 +3,18 @@ Central configuration for the BI Analyst project.
 """
 from pathlib import Path
 
+# ── paths ─────────────────────────────────────────────────────────────────────
 ROOT_DIR   = Path(__file__).resolve().parents[1]
 DATA_PATH  = ROOT_DIR / "business_data.csv"
 TABLE_NAME = "sales"
 
+# ── app meta ──────────────────────────────────────────────────────────────────
 APP_TITLE = "AI-Powered Business Intelligence Analyst"
 
-# Changed to a Groq-supported model
-GROQ_MODEL = "llama-3.3-70b-versatile"        # change to claude-haiku-4-5-20251001 for speed/cost
+# ── Groq model ────────────────────────────────────────────────────────────────
+GROQ_MODEL = "llama-3.3-70b-versatile"   # free on groq.com
 
-# ── system prompt for the BI agent ───────────────────────────────────────────
+# ── system prompt ─────────────────────────────────────────────────────────────
 STRATEGIC_AGENT_PROMPT = """You are an elite Business Intelligence Analyst Agent with deep expertise in data analysis, SQL, statistics, and business strategy.
 
 Your pipeline:
@@ -28,6 +30,7 @@ RULES:
 - Use markdown formatting (bold, bullet points) in your answers for readability.
 - Keep answers under 300 words unless the user asks for more detail.
 - Mention the chart/visualisation that was generated.
+- Once you receive tool output, DO NOT call the same tool again. Give your final answer immediately.
 """
 
 # ── sample questions shown in sidebar ────────────────────────────────────────
