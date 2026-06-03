@@ -1,10 +1,22 @@
-anthropic>=0.40.0
+# LLM & Agent framework
+groq>=0.9.0
+langchain-groq>=0.1.9
+langchain-core>=0.2.0
+langgraph>=0.1.0
+
+# Frontend
 streamlit>=1.35.0
+
+# Data
 pandas>=2.0.0
 numpy>=1.26.0
-plotly>=5.20.0
-reportlab>=4.2.0
-fpdf2>=2.7.9
-kaleido>=0.2.1
 scipy>=1.13.0
 statsmodels>=0.14.0
+
+# Charts
+plotly>=5.20.0
+kaleido>=0.2.1
+
+# PDF
+reportlab>=4.2.0
+fpdf2>=2.7.9

@@ -1,95 +1,127 @@
 """
-Multi-agent loop built with LangGraph + Groq (LLaMA 3.3 70B — free tier).
-
-Graph topology:
-  [entry] → agent_node ──(tool_calls?)──► tool_node → agent_node → ...
-                      └──(no calls)────► END
-
-Agents modelled inside the single graph:
-  1. Query Understanding  – system prompt parses intent
-  2. SQL Generator        – analyze_business_data tool builds + runs SQL
-  3. Data Analyst         – tool returns stats & KPIs
-  4. Visualisation Agent  – tool generates Plotly figure
-  5. Insight Generator    – LLM synthesises findings into narrative
-  6. Report Writer        – generate_pdf_report tool produces PDF
+Multi-agent loop: plain Groq SDK, simplified tools, no LangChain binding.
 """
 from __future__ import annotations
-from typing import TypedDict, Annotated, Sequence
-import operator
-
+import json
 import plotly.graph_objects as go
 import pandas as pd
+from groq import Groq
 
-from langchain_groq          import ChatGroq
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
-from langgraph.graph         import StateGraph, END
-from langgraph.prebuilt      import ToolNode
+from backend.config import STRATEGIC_AGENT_PROMPT
+from backend.tools  import set_tool_dataframe, get_last_fig
+from backend.tools  import inspect_dataset_schema, analyze_business_data, generate_pdf_report
 
-from backend.config import STRATEGIC_AGENT_PROMPT, GROQ_MODEL
-from backend.tools  import ALL_TOOLS, get_last_fig, set_tool_dataframe
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# ── MINIMAL tool schemas — fewer params = fewer hallucinations ────────────────
+TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_dataset_schema",
+            "description": "Get column names and data types of the dataset.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_business_data",
+            "description": "Analyze the dataset. Call this for any business question.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric":   {"type": "string", "description": "revenue or profit"},
+                    "group_by": {"type": "string", "description": "product or region or date"},
+                },
+                "required": ["metric", "group_by"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_pdf_report",
+            "description": "Generate a PDF report with the findings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Report text"},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+]
 
 
-# ── LangGraph state ───────────────────────────────────────────────────────────
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], operator.add]
+def _dispatch(name: str, args: dict) -> str:
+    if name == "inspect_dataset_schema":
+        return inspect_dataset_schema.invoke({})
+    if name == "analyze_business_data":
+        return analyze_business_data.invoke(args)
+    if name == "generate_pdf_report":
+        return generate_pdf_report.invoke(args)
+    return f"Unknown tool: {name}"
 
 
-# ── graph factory ─────────────────────────────────────────────────────────────
-def _build_graph(api_key: str):
-    llm = ChatGroq(groq_api_key=api_key, model=GROQ_MODEL)
-    llm_with_tools = llm.bind_tools(ALL_TOOLS)
-
-    sys_msg = SystemMessage(content=STRATEGIC_AGENT_PROMPT)
-
-    def agent_node(state: AgentState):
-        # strip any previous SystemMessages to avoid duplication, prepend ours
-        msgs = [m for m in state["messages"] if not isinstance(m, SystemMessage)]
-        response = llm_with_tools.invoke([sys_msg] + msgs)
-        return {"messages": [response]}
-
-    def should_continue(state: AgentState):
-        last = state["messages"][-1]
-        if hasattr(last, "tool_calls") and last.tool_calls:
-            return "tools"
-        return END
-
-    graph = StateGraph(AgentState)
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(tools=ALL_TOOLS))
-    graph.set_entry_point("agent")
-    graph.add_conditional_edges("agent", should_continue)
-    graph.add_edge("tools", "agent")
-    return graph.compile()
-
-
-# ── public entry point ────────────────────────────────────────────────────────
 def run_agent(
     question: str,
-    df:       pd.DataFrame,
-    api_key:  str,
-    history:  list[dict] | None = None,
+    df: pd.DataFrame,
+    api_key: str,
+    history: list[dict] | None = None,
     **_,
 ) -> tuple[str, go.Figure | None]:
-    """
-    Run the LangGraph agent and return (answer_text, plotly_figure | None).
-    """
     set_tool_dataframe(df)
-    graph = _build_graph(api_key)
+    client = Groq(api_key=api_key)
 
-    # convert chat history to LangChain message objects
-    lc_messages: list[BaseMessage] = []
+    messages = [{"role": "system", "content": STRATEGIC_AGENT_PROMPT}]
     for m in (history or []):
-        if m["role"] == "user":
-            lc_messages.append(HumanMessage(content=m["content"]))
-        elif m["role"] == "assistant":
-            lc_messages.append(AIMessage(content=m["content"]))
-    lc_messages.append(HumanMessage(content=question))
+        if m["role"] in ("user", "assistant"):
+            messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": question})
 
-    result = graph.invoke({"messages": lc_messages})
+    for _ in range(8):
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            tools=TOOL_SCHEMAS,
+            tool_choice="auto",
+            max_tokens=2048,
+        )
+        msg = response.choices[0].message
 
-    # extract final text from the last AI message
-    for msg in reversed(result["messages"]):
-        if isinstance(msg, AIMessage) and msg.content:
-            return str(msg.content), get_last_fig()
+        if not msg.tool_calls:
+            return msg.content or "Analysis complete.", get_last_fig()
 
-    return "Analysis complete.", get_last_fig()
+        # append assistant turn
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ],
+        })
+
+        # execute tools
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments)
+            except Exception:
+                args = {}
+            result = _dispatch(tc.function.name, args)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            })
+
+    return "Reached max steps. Please try a more specific question.", get_last_fig()

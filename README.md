@@ -1,6 +1,6 @@
 # 📊 AI-Powered Business Intelligence Analyst
 
-A production-grade multi-agent BI system that lets business stakeholders ask data questions in plain English and get instant insights, charts, and PDF reports 
+A production-grade multi-agent BI system that lets business stakeholders ask data questions in plain English and get instant insights, charts, and PDF reports — powered by Groq LLaMA 3.3.
 
 ---
 
@@ -11,7 +11,7 @@ User Question (natural language)
         │
         ▼
 ┌─────────────────────────────────────────┐
-│           BI Agent            
+│           BI Agent (Claude)             │
 │  1. Query Understanding                 │
 │  2. SQL Generator  ──► SQLite in-memory │
 │  3. Data Analyst   ──► Pandas + SciPy   │
@@ -53,7 +53,7 @@ bi_analyst/
 - Python 3.10 or higher
 - Git installed
 - VS Code installed
-- A free Groq api key
+- A free Anthropic API key from [console.groq.com](https://console.groq.com)
 
 ---
 
@@ -95,7 +95,7 @@ VS Code will detect the venv. When prompted **"Select Interpreter"**, choose `.v
 pip install -r requirements.txt
 ```
 
-This installs: `Groq`, `streamlit`, `pandas`, `plotly`, `reportlab`, `fpdf2`, `scipy`, `statsmodels`, `kaleido`.
+This installs: `anthropic`, `streamlit`, `pandas`, `plotly`, `reportlab`, `fpdf2`, `scipy`, `statsmodels`, `kaleido`.
 
 ---
 
@@ -118,7 +118,7 @@ streamlit run app.py
 The browser opens automatically at `http://localhost:8501`.
 
 **In the sidebar:**
-1. Paste your Groq API key
+1. Paste your Anthropic API key
 2. Click **Use Sample Data** (or upload your own CSV)
 3. Ask a question, e.g. *"Which product generated the most revenue?"*
 
@@ -147,10 +147,12 @@ git push -u origin main
 3. Select repo `bi-analyst`, branch `main`, main file `app.py`
 4. Under **Advanced settings → Secrets**, add:
    ```toml
-   Groq_API_KEY = "sk-ant-..."
+   GROQ_API_KEY = "gsk_... (from console.groq.com)
    ```
 5. Click **Deploy** — live URL in ~2 minutes ✅
 
+> The app reads the secret automatically if you change `app.py` to use
+> `st.secrets.get("GROQ_API_KEY", "")` as the default API key value.
 
 ---
 
@@ -178,7 +180,7 @@ Edit `backend/config.py` to:
 | Frontend | Streamlit + custom CSS |
 | Charts | Plotly Express |
 | Agent Framework | Anthropic tool-use (native) |
-| LLM | Claude claude-opus-4-5 |
+| LLM | LLaMA 3.3 70B (Groq) |
 | Data Analysis | Pandas + SciPy + NumPy |
 | SQL Engine | SQLite (in-memory) |
 | PDF Export | ReportLab |
