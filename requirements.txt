@@ -1,0 +1,10 @@
+anthropic>=0.40.0
+streamlit>=1.35.0
+pandas>=2.0.0
+numpy>=1.26.0
+plotly>=5.20.0
+reportlab>=4.2.0
+fpdf2>=2.7.9
+kaleido>=0.2.1
+scipy>=1.13.0
+statsmodels>=0.14.0
